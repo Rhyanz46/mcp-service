@@ -21,25 +21,34 @@ docker run -p 6333:6333 qdrant/qdrant
 
 ### 2. Run the Service
 ```bash
-# Using default configuration (local embeddings)
-go run main.go
+# Using default configuration (requires config.json)
+cp -n config.example.json config.json  # if you don't have one
+go run main.go -config=config.json
 
 # Using custom configuration
 go run . -config=config.example.json
 
 # Using environment variables
-EMBEDDING_PROVIDER=local DOCS_DIR=./my-docs go run main.go
+EMBEDDING_PROVIDER=local DOCS_DIR=./my-docs go run main.go -config=config.json
+
+# Testing mode (prefers test-config.json)
+go run main.go -test
+# or via env:
+TEST_MODE=1 go run main.go
+APP_ENV=test go run main.go
 ```
 
 ### Alternative: Makefile
 ```bash
-make run
+make run            # requires config.json
+make run-test       # uses test-config.json
 ```
 
 ## ✅ Startup Checks
 
-- Config file: If `-config` is not provided, the app looks for `config.json`. If not found, it logs a notice and runs with built‑in defaults plus environment overrides.
-- Qdrant health: On startup, it pings `QDRANT_URL` (`/health`). If unreachable, it logs a warning and continues; RAG tools will be unavailable until Qdrant is running.
+- Config file: The app requires a config file. By default it expects `config.json`, and in testing mode it prefers `test-config.json`. You can override with `-config <path>`.
+- If the chosen file is not found, startup fails with a clear error.
+- Qdrant health: On startup, it pings `QDRANT_URL` and retries up to 5 times. If still unreachable, startup fails with an error.
 
 ## 📦 Project Layout
 
@@ -163,6 +172,106 @@ Search for relevant document chunks using semantic similarity.
     "k": 5
   }
 }
+```
+
+### `rag_projects`
+List detected projects (grouped by parent directory of each indexed file) with total indexed chunks and number of distinct files.
+
+Parameters:
+- `prefix` (string, optional): Case-insensitive starts-with filter for project names. Default: empty (no filter).
+- `offset` (integer, optional): Pagination offset. Default: 0.
+- `limit` (integer, optional): Max number of projects to return. Default: 50. Max: 1000.
+
+Examples:
+```json
+{
+  "name": "rag_projects",
+  "arguments": {}
+}
+```
+
+```json
+{
+  "name": "rag_projects",
+  "arguments": { "prefix": "doc" }
+}
+```
+
+```json
+{
+  "name": "rag_projects",
+  "arguments": { "offset": 50, "limit": 50 }
+}
+```
+
+Response shape:
+```json
+{
+  "projects": [
+    { "project": "docs", "total_chunks": 128, "files": 6 },
+    { "project": "api",  "total_chunks": 64,  "files": 3 }
+  ],
+  "count": 2,
+  "total": 10,
+  "offset": 0,
+  "limit": 50,
+  "filter": { "prefix": "doc" }
+}
+```
+
+Notes:
+- Project name is derived from the parent directory of each chunk's `payload.path`. Example: `./docs/readme.md` → project `docs`.
+- This endpoint aggregates by scanning all points in the collection. For very large datasets, consider adding a `project` payload during ingestion and indexing it in Qdrant for faster aggregations.
+
+## 🧪 Example Usage
+
+### End-to-end: Index, then list projects
+Ensure Qdrant is running and you have a valid `config.json`.
+
+1) Index a directory (optional if already indexed):
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"rag_index","arguments":{"dir":"./docs","include_code":false}}}' \
+  | ./mcp-service -config config.json
+```
+
+2) List projects (first 10 entries):
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"rag_projects","arguments":{"prefix":"","offset":0,"limit":10}}}' \
+  | ./mcp-service -config config.json
+```
+
+3) Filter by prefix "doc":
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"rag_projects","arguments":{"prefix":"doc","limit":5}}}' \
+  | ./mcp-service -config config.json
+```
+
+### Makefile shortcut
+```bash
+make demo-projects
+```
+
+### Search using rag_search
+You can perform a semantic search across all indexed content. After inspecting projects via `rag_projects`, choose a relevant query and run `rag_search`.
+
+Note: Current implementation searches globally (no per-project filter yet). You can add project keywords into your query to bias results or extend the tool to support project filtering.
+
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"rag_search","arguments":{"query":"getting started","k":5}}}' \
+  | ./mcp-service -config config.json
+```
+
+Makefile shortcut:
+```bash
+make demo-search
 ```
 
 ## 🏗️ Architecture

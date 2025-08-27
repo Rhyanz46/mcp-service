@@ -9,6 +9,7 @@ import (
     "os"
     "path/filepath"
     "strings"
+    "sort"
     "time"
 
     cfg "github.com/Rhyanz46/mcp-service/internal/config"
@@ -139,9 +140,9 @@ func (q *Qdrant) EnsureCollection() error {
     return nil
 }
 
-// HealthCheck verifies Qdrant is reachable by querying /health
+// HealthCheck verifies Qdrant is reachable by querying /collections
 func (q *Qdrant) HealthCheck() error {
-    url := fmt.Sprintf("%s/health", q.baseURL)
+    url := fmt.Sprintf("%s/collections", q.baseURL)
     client := &http.Client{Timeout: 5 * time.Second}
     res, err := client.Get(url)
     if err != nil {
@@ -228,6 +229,144 @@ func (q *Qdrant) Search(vec []float32, k int, filter map[string]any) ([]SearchHi
     return out, nil
 }
 
+// ---------- Scrolling and project listing ----------
+type ScrollPoint struct {
+    ID      any            `json:"id"`
+    Payload map[string]any `json:"payload"`
+}
+
+func (q *Qdrant) ScrollPoints(limit int, offset any) ([]ScrollPoint, any, error) {
+    if limit <= 0 || limit > 10000 {
+        limit = 1000
+    }
+    body := map[string]any{
+        "limit":        limit,
+        "with_payload": true,
+    }
+    if offset != nil {
+        body["offset"] = offset
+    }
+    b, _ := json.Marshal(body)
+    url := fmt.Sprintf("%s/collections/%s/points/scroll", q.baseURL, q.collection)
+    req, _ := http.NewRequest("POST", url, bytes.NewReader(b))
+    req.Header.Set("Content-Type", "application/json")
+    client := &http.Client{Timeout: 15 * time.Second}
+    res, err := client.Do(req)
+    if err != nil {
+        return nil, nil, err
+    }
+    defer res.Body.Close()
+    if res.StatusCode >= 300 {
+        return nil, nil, fmt.Errorf("scroll http %d", res.StatusCode)
+    }
+    var rr struct {
+        Result struct {
+            Points         []struct {
+                ID      any            `json:"id"`
+                Payload map[string]any `json:"payload"`
+            } `json:"points"`
+            NextPageOffset any `json:"next_page_offset"`
+        } `json:"result"`
+    }
+    if err := json.NewDecoder(res.Body).Decode(&rr); err != nil {
+        return nil, nil, err
+    }
+    pts := make([]ScrollPoint, len(rr.Result.Points))
+    for i, p := range rr.Result.Points {
+        pts[i] = ScrollPoint{ID: p.ID, Payload: p.Payload}
+    }
+    return pts, rr.Result.NextPageOffset, nil
+}
+
+// ListProjects aggregates indexed chunks by project (directory name of each file)
+func (r *VecRAG) ListProjects() ([]map[string]any, error) {
+    // Scroll through all points and group by project name derived from payload.path
+    counts := map[string]int{}
+    files := map[string]map[string]struct{}{}
+    var offset any
+    for {
+        pts, next, err := r.vdb.ScrollPoints(1000, offset)
+        if err != nil {
+            return nil, err
+        }
+        for _, pt := range pts {
+            p := pt.Payload
+            pathVal := toStr(p["path"])
+            project := projectFromPath(pathVal)
+            counts[project]++
+            if files[project] == nil {
+                files[project] = map[string]struct{}{}
+            }
+            files[project][toStr(p["basename"])]= struct{}{}
+        }
+        if next == nil {
+            break
+        }
+        offset = next
+    }
+    out := make([]map[string]any, 0, len(counts))
+    for proj, n := range counts {
+        out = append(out, map[string]any{
+            "project":      proj,
+            "total_chunks": n,
+            "files":        len(files[proj]),
+        })
+    }
+    // Optional: sort by name
+    sort.Slice(out, func(i, j int) bool { return fmt.Sprint(out[i]["project"]) < fmt.Sprint(out[j]["project"]) })
+    return out, nil
+}
+
+func projectFromPath(p string) string {
+    if p == "" {
+        return "unknown"
+    }
+    dir := filepath.Dir(p)
+    if dir == "." || dir == "/" {
+        return "root"
+    }
+    return filepath.Base(dir)
+}
+
+// ListProjectsFiltered filters by name prefix and paginates results after aggregation.
+// Note: This scans the whole collection to aggregate per-project counts.
+func (r *VecRAG) ListProjectsFiltered(prefix string, offset, limit int) ([]map[string]any, int, error) {
+    list, err := r.ListProjects()
+    if err != nil {
+        return nil, 0, err
+    }
+    // filter by prefix (case-insensitive)
+    fprefix := strings.ToLower(strings.TrimSpace(prefix))
+    filtered := list[:0]
+    if fprefix == "" {
+        filtered = list
+    } else {
+        for _, it := range list {
+            pname := strings.ToLower(fmt.Sprint(it["project"]))
+            if strings.HasPrefix(pname, fprefix) {
+                filtered = append(filtered, it)
+            }
+        }
+    }
+    total := len(filtered)
+    if offset < 0 {
+        offset = 0
+    }
+    if limit <= 0 {
+        limit = 50
+    }
+    if offset > total {
+        return []map[string]any{}, total, nil
+    }
+    end := offset + limit
+    if end > total {
+        end = total
+    }
+    page := make([]map[string]any, end-offset)
+    copy(page, filtered[offset:end])
+    return page, total, nil
+}
+
 // ---------- RAG ops ----------
 type VecRAG struct {
     embed  EmbeddingProvider
@@ -303,6 +442,7 @@ func (r *VecRAG) IngestDocs(dir string, includeCode bool) (int, error) {
                 "basename":  filepath.Base(c.Path),
                 "preview":   preview(c.Text, 240),
                 "file_type": r.config.GetFileType(c.Path),
+                "project":   projectFromPath(c.Path),
             }
         }
         if err := r.vdb.UpsertPoints(ids, vecs, payloads); err != nil {
@@ -314,28 +454,7 @@ func (r *VecRAG) IngestDocs(dir string, includeCode bool) (int, error) {
 }
 
 func (r *VecRAG) Search(query string, k int) ([]map[string]any, error) {
-    vecs, err := r.embed.Embed([]string{query})
-    if err != nil {
-        return nil, err
-    }
-    res, err := r.vdb.Search(vecs[0], k, nil)
-    if err != nil {
-        return nil, err
-    }
-    out := make([]map[string]any, len(res))
-    for i, h := range res {
-        p := h.Payload
-        out[i] = map[string]any{
-            "id":        fmt.Sprint(h.ID),
-            "score":     h.Score,
-            "path":      toStr(p["path"]),
-            "basename":  toStr(p["basename"]),
-            "position":  p["position"],
-            "snippet":   toStr(p["preview"]),
-            "file_type": toStr(p["file_type"]),
-        }
-    }
-    return out, nil
+    return r.SearchWithFilter(query, k, "", "")
 }
 
 func preview(s string, n int) string {
@@ -353,4 +472,78 @@ func toStr(v any) string {
     default:
         return fmt.Sprint(v)
     }
+}
+
+// SearchWithFilter supports optional project or projectPrefix filtering.
+// If project is set, it uses a server-side Qdrant filter for exact match.
+// If projectPrefix is set (and project empty), it fetches a larger set then filters client-side.
+func (r *VecRAG) SearchWithFilter(query string, k int, project string, projectPrefix string) ([]map[string]any, error) {
+    if k <= 0 {
+        k = 5
+    }
+    vecs, err := r.embed.Embed([]string{query})
+    if err != nil {
+        return nil, err
+    }
+    // Build filter for exact project match
+    var filter map[string]any
+    if strings.TrimSpace(project) != "" {
+        filter = map[string]any{
+            "must": []map[string]any{
+                {
+                    "key":   "project",
+                    "match": map[string]any{"value": project},
+                },
+            },
+        }
+    }
+    // If prefix provided without exact project, pull a larger page and filter client-side
+    limit := k
+    if filter == nil && strings.TrimSpace(projectPrefix) != "" {
+        if k < 20 {
+            limit = 20
+        }
+        if limit < k*5 {
+            limit = k * 5
+        }
+        if limit > 100 {
+            limit = 100
+        }
+    }
+    res, err := r.vdb.Search(vecs[0], limit, filter)
+    if err != nil {
+        return nil, err
+    }
+    // Map hits
+    items := make([]map[string]any, 0, len(res))
+    for _, h := range res {
+        p := h.Payload
+        it := map[string]any{
+            "id":        fmt.Sprint(h.ID),
+            "score":     h.Score,
+            "path":      toStr(p["path"]),
+            "basename":  toStr(p["basename"]),
+            "position":  p["position"],
+            "snippet":   toStr(p["preview"]),
+            "file_type": toStr(p["file_type"]),
+            "project":   toStr(p["project"]),
+        }
+        items = append(items, it)
+    }
+    // Client-side prefix filter if needed
+    if filter == nil && strings.TrimSpace(projectPrefix) != "" {
+        pref := strings.ToLower(strings.TrimSpace(projectPrefix))
+        filtered := items[:0]
+        for _, it := range items {
+            if strings.HasPrefix(strings.ToLower(fmt.Sprint(it["project"])), pref) {
+                filtered = append(filtered, it)
+            }
+        }
+        items = filtered
+    }
+    // Trim to k
+    if len(items) > k {
+        items = items[:k]
+    }
+    return items, nil
 }
