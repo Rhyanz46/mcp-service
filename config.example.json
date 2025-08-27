@@ -1,0 +1,39 @@
+{
+  "server": {
+    "name": "mcp-rag-service",
+    "version": "1.0.0"
+  },
+  "embedding": {
+    "provider": "local",
+    "openai": {
+      "api_key": "",
+      "model": "text-embedding-3-small",
+      "dim": 1536
+    },
+    "local": {
+      "dim": 300
+    }
+  },
+  "qdrant": {
+    "url": "http://localhost:6333",
+    "collection": "mcp_rag"
+  },
+  "indexing": {
+    "docs_dir": "./docs",
+    "chunk_size": 800,
+    "chunk_overlap": 100,
+    "batch_size": 10,
+    "include_code": false,
+    "file_types": {
+      "documentation": [".md", ".txt", ".rst", ".adoc"],
+      "code": [".go", ".py", ".js", ".ts", ".java", ".cpp", ".c", ".h", ".cs", ".php", ".rb", ".rs", ".scala", ".kt", ".swift", ".dart", ".r", ".m", ".sh", ".bat", ".ps1"],
+      "config": [".json", ".yaml", ".yml", ".xml", ".toml", ".ini", ".cfg", ".conf"],
+      "database": [".sql", ".ddl", ".dml"],
+      "web": [".html", ".css", ".scss", ".less", ".jsx", ".tsx", ".vue", ".svelte"]
+    }
+  },
+  "logging": {
+    "level": "info",
+    "prefix": "[MCP-RAG]"
+  }
+}
