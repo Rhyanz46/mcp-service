@@ -36,7 +36,7 @@ test: build
 run: build
 	@echo "🚀 Starting MCP RAG service..."
 	@if [ -z "$(OPENAI_API_KEY)" ]; then \
-		echo "⚠️  Warning: OPENAI_API_KEY not set. RAG tools will be unavailable."; \
+		echo "ℹ️  OPENAI_API_KEY not set. Using local TF-IDF embeddings."; \
 	fi
 	./mcp-service
 

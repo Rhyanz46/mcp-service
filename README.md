@@ -22,14 +22,33 @@ docker run -p 6333:6333 qdrant/qdrant
 ### 2. Run the Service
 ```bash
 # Using default configuration (local embeddings)
-go run .
+go run main.go
 
 # Using custom configuration
 go run . -config=config.example.json
 
 # Using environment variables
-EMBEDDING_PROVIDER=local DOCS_DIR=./my-docs go run .
+EMBEDDING_PROVIDER=local DOCS_DIR=./my-docs go run main.go
 ```
+
+### Alternative: Makefile
+```bash
+make run
+```
+
+## ✅ Startup Checks
+
+- Config file: If `-config` is not provided, the app looks for `config.json`. If not found, it logs a notice and runs with built‑in defaults plus environment overrides.
+- Qdrant health: On startup, it pings `QDRANT_URL` (`/health`). If unreachable, it logs a warning and continues; RAG tools will be unavailable until Qdrant is running.
+
+## 📦 Project Layout
+
+- `main.go`: entrypoint wiring config, MCP, and RAG.
+- `internal/config`: configuration types, env/file loaders, `config.Global`.
+- `internal/mcp`: JSON-RPC and MCP request/response structures, stdio transport.
+- `internal/chunker`: document scanning and chunking helpers.
+- `internal/ragvec`: vector RAG with Qdrant + embeddings (default in main).
+- `internal/ragclassic`: classic BM25/TF index (kept for reference).
 
 ### 3. Test with Sample Data
 ```bash
