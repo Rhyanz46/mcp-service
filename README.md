@@ -462,6 +462,14 @@ Notes:
 - Tool results return `content` as an array with both a human-readable `text` item and a structured `json` item, which works well across MCP clients including Gemini CLI.
 - For discovery without Qdrant, launch with `-no-qdrant` or `MCP_NO_QDRANT=1`.
 
+### MCP Compliance Notes
+- `capabilities.tools` harus berupa objek kosong `{}` untuk mengindikasikan dukungan tools (bukan boolean).
+- `notifications/initialized` adalah JSON-RPC notification (tanpa `id`) — server tidak boleh membalas pesan ini.
+
+### Troubleshooting (Gemini)
+- Error `capabilities.tools` boolean: pastikan binary yang dipanggil Gemini adalah versi terbaru yang mengirim `{}`. Gunakan path absolut di `.gemini/settings.json`.
+- Error Zod `unrecognized key(s) 'result'` pada `notifications/initialized`: terjadi jika server mengirim response untuk notification. Versi ini sudah memperbaikinya (no-reply). Pastikan Gemini menjalankan binary terbaru.
+
 ## 🧪 Testing
 
 ### Run All Tests
