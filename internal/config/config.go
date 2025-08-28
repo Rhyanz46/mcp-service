@@ -18,6 +18,7 @@ type Config struct {
     Qdrant    QdrantConfig    `json:"qdrant"`
     Indexing  IndexingConfig  `json:"indexing"`
     Logging   LoggingConfig   `json:"logging"`
+    HTTP      HTTPConfig      `json:"http"`
 }
 
 type ServerConfig struct {
@@ -72,6 +73,11 @@ type LoggingConfig struct {
     Prefix string `json:"prefix"`
 }
 
+type HTTPConfig struct {
+    // APIKey enables simple bearer/X-API-Key auth for REST endpoints when non-empty
+    APIKey string `json:"api_key"`
+}
+
 // DefaultConfig returns a configuration with sensible defaults
 func DefaultConfig() *Config {
     return &Config{
@@ -114,6 +120,9 @@ func DefaultConfig() *Config {
         Logging: LoggingConfig{
             Level:  "info",
             Prefix: "[MCP-RAG]",
+        },
+        HTTP: HTTPConfig{
+            APIKey: "",
         },
     }
 }
@@ -187,6 +196,11 @@ func (c *Config) LoadFromEnv() {
     // Logging config
     if v := os.Getenv("LOG_LEVEL"); v != "" {
         c.Logging.Level = v
+    }
+
+    // HTTP config
+    if v := os.Getenv("HTTP_API_KEY"); v != "" {
+        c.HTTP.APIKey = v
     }
 }
 

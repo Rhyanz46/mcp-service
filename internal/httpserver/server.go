@@ -5,6 +5,7 @@ import (
     "fmt"
     "log"
     "net/http"
+    "crypto/subtle"
     "strconv"
     "strings"
     "time"
@@ -21,9 +22,30 @@ type errorResponse struct {
 // Start launches a simple HTTP server exposing similar functionality as MCP tools
 func Start(addr string, conf *cfg.Config, rag *ragvec.VecRAG) {
     mux := http.NewServeMux()
+    apiKey := strings.TrimSpace(conf.HTTP.APIKey)
+    requireAuth := func(h http.HandlerFunc) http.HandlerFunc {
+        if apiKey == "" {
+            return h
+        }
+        return func(w http.ResponseWriter, r *http.Request) {
+            key := r.Header.Get("Authorization")
+            if strings.HasPrefix(strings.ToLower(key), "bearer ") {
+                key = strings.TrimSpace(key[7:])
+            } else {
+                key = r.Header.Get("X-API-Key")
+            }
+            if subtle.ConstantTimeCompare([]byte(key), []byte(apiKey)) != 1 {
+                w.Header().Set("Content-Type", "application/json")
+                w.WriteHeader(http.StatusUnauthorized)
+                _ = json.NewEncoder(w).Encode(errorResponse{Error: "unauthorized", Details: "Provide Authorization: Bearer <token> or X-API-Key header"})
+                return
+            }
+            h(w, r)
+        }
+    }
 
     // health/status (fast by default)
-    mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+    mux.HandleFunc("/status", requireAuth(func(w http.ResponseWriter, r *http.Request) {
         fastOnly := true
         if v := r.URL.Query().Get("fast_only"); v != "" {
             if v == "0" || strings.EqualFold(v, "false") { fastOnly = false }
@@ -81,10 +103,10 @@ func Start(addr string, conf *cfg.Config, rag *ragvec.VecRAG) {
             "note":          note,
         }
         writeJSON(w, http.StatusOK, status)
-    })
+    }))
 
     // POST /rag/index {dir, include_code}
-    mux.HandleFunc("/rag/index", func(w http.ResponseWriter, r *http.Request) {
+    mux.HandleFunc("/rag/index", requireAuth(func(w http.ResponseWriter, r *http.Request) {
         if rag == nil { writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "RAG not initialized", Details: "Start Qdrant or disable -no-qdrant"}); return }
         var body struct {
             Dir         string `json:"dir"`
@@ -101,10 +123,10 @@ func Start(addr string, conf *cfg.Config, rag *ragvec.VecRAG) {
             "status":       "success",
         }
         writeJSON(w, http.StatusOK, resp)
-    })
+    }))
 
     // POST /rag/search {query, k, project, project_prefix}
-    mux.HandleFunc("/rag/search", func(w http.ResponseWriter, r *http.Request) {
+    mux.HandleFunc("/rag/search", requireAuth(func(w http.ResponseWriter, r *http.Request) {
         if rag == nil { writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "RAG not initialized", Details: "Start Qdrant or disable -no-qdrant"}); return }
         var body struct {
             Query         string `json:"query"`
@@ -118,10 +140,10 @@ func Start(addr string, conf *cfg.Config, rag *ragvec.VecRAG) {
         hits, err := rag.SearchWithFilter(body.Query, body.K, body.Project, body.ProjectPrefix)
         if err != nil { writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "search error", Details: err.Error()}); return }
         writeJSON(w, http.StatusOK, map[string]any{"query": body.Query, "chunks": hits, "total_chunks": len(hits)})
-    })
+    }))
 
     // GET /rag/projects?prefix=&offset=&limit=
-    mux.HandleFunc("/rag/projects", func(w http.ResponseWriter, r *http.Request) {
+    mux.HandleFunc("/rag/projects", requireAuth(func(w http.ResponseWriter, r *http.Request) {
         if rag == nil { writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "RAG not initialized", Details: "Start Qdrant or disable -no-qdrant"}); return }
         q := r.URL.Query()
         prefix := q.Get("prefix")
@@ -130,7 +152,7 @@ func Start(addr string, conf *cfg.Config, rag *ragvec.VecRAG) {
         list, total, err := rag.ListProjectsFiltered(prefix, offset, limit)
         if err != nil { writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "projects error", Details: err.Error()}); return }
         writeJSON(w, http.StatusOK, map[string]any{"projects": list, "count": len(list), "total": total, "offset": offset, "limit": limit, "filter": map[string]any{"prefix": prefix}})
-    })
+    }))
 
     srv := &http.Server{Addr: addr, Handler: mux}
     go func() {
@@ -167,4 +189,3 @@ func projectFromPath(p string) string {
     if j < 0 { return rest }
     return rest[j+1:]
 }
-

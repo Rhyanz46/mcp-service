@@ -326,6 +326,28 @@ Endpoints:
 - `POST /rag/search` – body: `{ "query": "...", "k": 5, "project": "", "project_prefix": "" }`.
 - `GET /rag/projects?prefix=&offset=&limit=` – daftar proyek terindeks.
 
+### HTTP Auth
+- Set `HTTP_API_KEY` sebagai environment variable atau isi `http.api_key` di `config.json`.
+- Semua endpoint REST memerlukan salah satu header berikut saat `api_key` diset:
+  - `Authorization: Bearer <API_KEY>`
+  - `X-API-Key: <API_KEY>`
+- Jika `api_key` kosong, endpoint tidak diautentikasi (terbuka).
+
+Contoh:
+```bash
+export HTTP_API_KEY=secret123
+./mcp-service -config config.json -http :8080
+
+# Tanpa auth → 401
+curl -i http://localhost:8080/status
+
+# Dengan Bearer
+curl -H 'Authorization: Bearer secret123' http://localhost:8080/status | jq
+
+# Dengan X-API-Key
+curl -H 'X-API-Key: secret123' http://localhost:8080/status | jq
+```
+
 Contoh:
 ```bash
 curl -s http://localhost:8080/status | jq

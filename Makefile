@@ -1,6 +1,6 @@
 # Makefile for MCP RAG Service
 
-.PHONY: build test clean run start-qdrant stop-qdrant logs help init-config run-test demo-projects demo-search demo-status \
+.PHONY: build test clean run start-qdrant stop-qdrant logs help init-config run-test demo-projects demo-search demo-status test-http-auth \
         install install-linux-user install-linux-system uninstall-linux-user uninstall-linux-system
 
 # Default target
@@ -19,6 +19,7 @@ help:
 	@echo "  demo-projects Show example JSON-RPC for rag_projects"
 	@echo "  demo-search   Show example JSON-RPC for rag_search"
 	@echo "  demo-status   Show example JSON-RPC for status_get"
+	@echo "  test-http-auth  Run HTTP auth smoke tests (requires curl)"
 	@echo "  run-http      Run service with HTTP API (:8080)"
 	@echo "  install       Install the binary on Linux (user/system)"
 	@echo "                 - make install MODE=user   # -> $$HOME/.local/bin"
@@ -147,6 +148,13 @@ run-http: build
 	fi
 	@echo "🌐 Starting with HTTP API at :8080"
 	./mcp-service -config config.json -http :8080
+
+.PHONY: test-http-auth
+test-http-auth: build
+	@if ! command -v curl >/dev/null 2>&1; then \
+		echo "❌ curl is required for this test"; exit 1; \
+	fi
+	bash scripts/test_http_auth.sh
 
 # Start Qdrant
 start-qdrant:
