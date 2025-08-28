@@ -42,6 +42,10 @@ APP_ENV=test go run main.go
 ```bash
 make run            # requires config.json
 make run-test       # uses test-config.json
+
+# Degraded mode (for MCP discovery without Qdrant)
+go run main.go -config=config.json -no-qdrant
+MCP_NO_QDRANT=1 ./mcp-service -config config.json
 ```
 
 ## ✅ Startup Checks
@@ -49,6 +53,7 @@ make run-test       # uses test-config.json
 - Config file: The app requires a config file. By default it expects `config.json`, and in testing mode it prefers `test-config.json`. You can override with `-config <path>`.
 - If the chosen file is not found, startup fails with a clear error.
 - Qdrant health: On startup, it pings `QDRANT_URL` and retries up to 5 times. If still unreachable, startup fails with an error.
+  - For MCP clients that just need to list tools without Qdrant, run with `-no-qdrant` or env `MCP_NO_QDRANT=1`.
 
 ## 📦 Project Layout
 
@@ -105,6 +110,9 @@ The service uses a centralized configuration system that supports:
     "chunk_overlap": 100,
     "batch_size": 10,
     "include_code": false,
+    "max_file_kb": 1024,
+    "exclude_dirs": [".git", "node_modules", "vendor", "build", "dist", "target", ".venv"],
+    "follow_symlinks": false,
     "file_types": {
       "documentation": [".md", ".txt", ".rst", ".adoc"],
       "code": [".go", ".py", ".js", ".ts", "..."],
@@ -223,6 +231,34 @@ Notes:
 - Project name is derived from the parent directory of each chunk's `payload.path`. Example: `./docs/readme.md` → project `docs`.
 - This endpoint aggregates by scanning all points in the collection. For very large datasets, consider adding a `project` payload during ingestion and indexing it in Qdrant for faster aggregations.
 
+### `status_get`
+Dapatkan status server secara ringkas: provider embedding, kesehatan Qdrant, jumlah chunks, jumlah proyek (opsional), dan ringkasan konfigurasi indexing.
+
+Parameters:
+- `fast_only` (boolean, default: `true`): Jika `true`, hanya metrik cepat (health, total chunks via count). Jika `false`, server mencoba mengagregasi jumlah proyek dengan memindai koleksi (dapat memakan waktu pada dataset besar).
+
+Example:
+```json
+{
+  "name": "status_get",
+  "arguments": { "fast_only": true }
+}
+```
+
+Response shape (contoh):
+```json
+{
+  "provider": "local",
+  "qdrant": { "url": "http://localhost:6333", "collection": "mcp_rag", "health": "ok" },
+  "counts": { "chunks": 1234, "projects": null },
+  "config": { "chunk_size": 800, "chunk_overlap": 100, "batch_size": 10, "max_file_kb": 1024, "exclude_dirs": [".git","node_modules", "vendor", "build", "dist", "target", ".venv"] },
+  "degraded_mode": false,
+  "fast_only": true,
+  "elapsed_ms": 21,
+  "note": "fast_only=true"
+}
+```
+
 ## 🧪 Example Usage
 
 ### End-to-end: Index, then list projects
@@ -273,6 +309,59 @@ Makefile shortcut:
 ```bash
 make demo-search
 ```
+
+## 🌐 HTTP API (opsional)
+
+Jalankan service dengan HTTP API:
+
+```bash
+go run . -config=config.json -http :8080
+# atau binary:
+./mcp-service -config config.json -http :8080
+```
+
+Endpoints:
+- `GET /status?fast_only=true` – ringkasan status (mirip tool `status_get`).
+- `POST /rag/index` – body: `{ "dir": "./docs", "include_code": false }`.
+- `POST /rag/search` – body: `{ "query": "...", "k": 5, "project": "", "project_prefix": "" }`.
+- `GET /rag/projects?prefix=&offset=&limit=` – daftar proyek terindeks.
+
+Contoh:
+```bash
+curl -s http://localhost:8080/status | jq
+curl -s -X POST http://localhost:8080/rag/index \
+  -H 'content-type: application/json' \
+  -d '{"dir":"./docs","include_code":false}' | jq
+curl -s -X POST http://localhost:8080/rag/search \
+  -H 'content-type: application/json' \
+  -d '{"query":"getting started","k":5}' | jq
+curl -s 'http://localhost:8080/rag/projects?prefix=&offset=0&limit=10' | jq
+```
+
+### Server status via status_get
+Lihat ringkasan status server (provider, health, counts) untuk troubleshooting cepat.
+
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"status_get","arguments":{"fast_only":true}}}' \
+  | ./mcp-service -config config.json
+```
+
+Makefile shortcut:
+```bash
+make demo-status
+```
+
+## 🛡️ Indexing Guardrails
+
+Untuk mencegah pembacaan berkas yang tidak perlu atau terlalu besar saat `rag_index`:
+
+- `max_file_kb` (default 1024): Berkas lebih besar dari nilai ini akan di-skip.
+- `exclude_dirs`: Direktori yang tidak dipindai (default: `.git`, `node_modules`, `vendor`, `build`, `dist`, `target`, `.venv`).
+- `follow_symlinks` (default false): Jika `false`, symlink akan di-skip; mengurangi risiko keluar dari root direktori.
+
+Semua opsi dapat dikonfigurasi di `config.json` pada bagian `indexing`.
 
 ## 🏗️ Architecture
 
@@ -347,6 +436,31 @@ See [INTEGRATION.md](INTEGRATION.md) for detailed setup instructions.
   }
 }
 ```
+
+## 🔗 Gemini CLI Integration
+
+The service is compatible with the Gemini CLI MCP client via stdio transport and JSON-RPC framing.
+
+- Ensure the binary is built: `go build .`
+- Verify Qdrant is running, or start in degraded mode with `-no-qdrant` for tool discovery only.
+- The repo includes a `.gemini/settings.json` that points Gemini CLI to the local server.
+
+Example `.gemini/settings.json` (already provided):
+```json
+{
+  "mcpServers": {
+    "rag-service": {
+      "command": "./mcp-service",
+      "args": ["-config", "./config.json"]
+    }
+  }
+}
+```
+
+Notes:
+- Initialization returns `protocolVersion` `2024-11-05` and advertises `tools` capability as an empty object (per spec).
+- Tool results return `content` as an array with both a human-readable `text` item and a structured `json` item, which works well across MCP clients including Gemini CLI.
+- For discovery without Qdrant, launch with `-no-qdrant` or `MCP_NO_QDRANT=1`.
 
 ## 🧪 Testing
 

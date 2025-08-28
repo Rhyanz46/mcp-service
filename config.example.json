@@ -24,6 +24,9 @@
     "chunk_overlap": 100,
     "batch_size": 10,
     "include_code": false,
+    "max_file_kb": 1024,
+    "exclude_dirs": [".git", "node_modules", "vendor", "build", "dist", "target", ".venv"],
+    "follow_symlinks": false,
     "file_types": {
       "documentation": [".md", ".txt", ".rst", ".adoc"],
       "code": [".go", ".py", ".js", ".ts", ".java", ".cpp", ".c", ".h", ".cs", ".php", ".rb", ".rs", ".scala", ".kt", ".swift", ".dart", ".r", ".m", ".sh", ".bat", ".ps1"],

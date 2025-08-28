@@ -3,3 +3,4 @@ mcp-rag-test
 test-config.json
 config.json
 mcp-service
+.gemini/

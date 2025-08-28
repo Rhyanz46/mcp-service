@@ -52,6 +52,10 @@ type IndexingConfig struct {
     ChunkOverlap int             `json:"chunk_overlap"`
     BatchSize    int             `json:"batch_size"`
     IncludeCode  bool            `json:"include_code"`
+    // Guardrails
+    MaxFileKB    int             `json:"max_file_kb"`
+    ExcludeDirs  []string        `json:"exclude_dirs"`
+    FollowSymlinks bool          `json:"follow_symlinks"`
     FileTypes    FileTypesConfig `json:"file_types"`
 }
 
@@ -96,6 +100,9 @@ func DefaultConfig() *Config {
             ChunkOverlap: 100,
             BatchSize:    10,
             IncludeCode:  false,
+            MaxFileKB:    1024, // 1 MB default limit
+            ExcludeDirs:  []string{".git", "node_modules", "vendor", "build", "dist", "target", ".venv"},
+            FollowSymlinks: false,
             FileTypes: FileTypesConfig{
                 Documentation: []string{".md", ".txt", ".rst", ".adoc"},
                 Code:          []string{".go", ".py", ".js", ".ts", ".java", ".cpp", ".c", ".h", ".cs", ".php", ".rb", ".rs", ".scala", ".kt", ".swift", ".dart", ".r", ".m", ".sh", ".bat", ".ps1"},
@@ -263,4 +270,3 @@ func (c *Config) SaveToFile(path string) error {
     }
     return os.WriteFile(path, data, 0644)
 }
-

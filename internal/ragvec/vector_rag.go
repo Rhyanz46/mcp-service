@@ -155,6 +155,33 @@ func (q *Qdrant) HealthCheck() error {
     return nil
 }
 
+// CountPoints returns the number of points in the current collection
+func (q *Qdrant) CountPoints() (int, error) {
+    url := fmt.Sprintf("%s/collections/%s/points/count", q.baseURL, q.collection)
+    body := map[string]any{"exact": true}
+    b, _ := json.Marshal(body)
+    req, _ := http.NewRequest("POST", url, bytes.NewReader(b))
+    req.Header.Set("Content-Type", "application/json")
+    client := &http.Client{Timeout: 10 * time.Second}
+    res, err := client.Do(req)
+    if err != nil {
+        return 0, err
+    }
+    defer res.Body.Close()
+    if res.StatusCode >= 300 {
+        return 0, fmt.Errorf("count http %d", res.StatusCode)
+    }
+    var rr struct {
+        Result struct {
+            Count int `json:"count"`
+        } `json:"result"`
+    }
+    if err := json.NewDecoder(res.Body).Decode(&rr); err != nil {
+        return 0, err
+    }
+    return rr.Result.Count, nil
+}
+
 func (q *Qdrant) UpsertPoints(ids []string, vecs [][]float32, payloads []map[string]any) error {
     if len(ids) != len(vecs) || len(ids) != len(payloads) {
         return errors.New("mismatch len")

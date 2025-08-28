@@ -17,17 +17,44 @@ type Chunk struct {
 
 func readDocs(dir string, includeCode bool, config *cfg.Config) ([]struct{ Path, Text string }, error) {
     var out []struct{ Path, Text string }
+    // Normalize base dir
+    baseAbs, _ := filepath.Abs(dir)
+    exclude := map[string]struct{}{}
+    for _, d := range config.Indexing.ExcludeDirs {
+        exclude[d] = struct{}{}
+    }
+    maxBytes := int64(config.Indexing.MaxFileKB) * 1024
+
     err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
         if err != nil {
             return err
         }
-        if info.IsDir() {
+        // Skip symlinks unless allowed
+        if (info.Mode() & os.ModeSymlink) != 0 && !config.Indexing.FollowSymlinks {
+            if info.IsDir() { return filepath.SkipDir }
             return nil
         }
+        // Skip excluded directories
+        if info.IsDir() {
+            name := filepath.Base(path)
+            if _, ok := exclude[name]; ok {
+                return filepath.SkipDir
+            }
+            return nil
+        }
+        // Guard: ensure path stays under base
+        if abs, _ := filepath.Abs(path); !strings.HasPrefix(abs, baseAbs+string(os.PathSeparator)) && abs != baseAbs {
+            return nil
+        }
+
         ext := strings.ToLower(filepath.Ext(path))
 
         // Documentation files - always include
         if config.IsDocumentationFile(ext) {
+            // Size check before reading
+            if maxBytes > 0 && info.Size() > maxBytes {
+                return nil
+            }
             b, err := os.ReadFile(path)
             if err != nil {
                 return err
@@ -38,6 +65,9 @@ func readDocs(dir string, includeCode bool, config *cfg.Config) ([]struct{ Path,
 
         // Code files - only if includeCode is true
         if includeCode && config.IsCodeFile(ext) {
+            if maxBytes > 0 && info.Size() > maxBytes {
+                return nil
+            }
             b, err := os.ReadFile(path)
             if err != nil {
                 return err
@@ -114,4 +144,3 @@ func intToStr(i int) string {
     }
     return string(digits)
 }
-

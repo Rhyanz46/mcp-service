@@ -1,26 +1,32 @@
 package main
 
 import (
-	"encoding/json"
-	"flag"
-	"fmt"
-	"log"
-	"os"
-	"strings"
-	"time"
+    "encoding/json"
+    "flag"
+    "fmt"
+    "log"
+    "os"
+    "path/filepath"
+    "strings"
+    "time"
 
-	cfg "github.com/Rhyanz46/mcp-service/internal/config"
-	"github.com/Rhyanz46/mcp-service/internal/mcp"
-	"github.com/Rhyanz46/mcp-service/internal/ragvec"
+    cfg "github.com/Rhyanz46/mcp-service/internal/config"
+    "github.com/Rhyanz46/mcp-service/internal/httpserver"
+    "github.com/Rhyanz46/mcp-service/internal/mcp"
+    "github.com/Rhyanz46/mcp-service/internal/ragvec"
 )
 
 func main() {
-	// Parse command line flags
-	var configPath string
-	var testFlag bool
-	flag.StringVar(&configPath, "config", "", "Path to configuration file (optional)")
-	flag.BoolVar(&testFlag, "test", false, "Enable testing mode (prefers test-config.json)")
-	flag.Parse()
+    // Parse command line flags
+    var configPath string
+    var testFlag bool
+    var noQdrant bool
+    var httpAddr string
+    flag.StringVar(&configPath, "config", "", "Path to configuration file (optional)")
+    flag.BoolVar(&testFlag, "test", false, "Enable testing mode (prefers test-config.json)")
+    flag.BoolVar(&noQdrant, "no-qdrant", false, "Start in degraded mode without connecting to Qdrant (tools listed, calls will error)")
+    flag.StringVar(&httpAddr, "http", "", "Also serve HTTP API on this address (e.g., :8080)")
+    flag.Parse()
 
 	// Resolve configuration path
 	testMode := testFlag || os.Getenv("TEST_MODE") == "1" || strings.ToLower(os.Getenv("APP_ENV")) == "test"
@@ -55,33 +61,41 @@ func main() {
 
 	rpc := mcp.NewStdioRPC()
 
-	// Check Qdrant health with retry; fail after 5 attempts
-	var rag *ragvec.VecRAG
-	q := ragvec.NewQdrantWithConfig(&cfg.Global.Qdrant, 1)
-	var healthErr error
-	for attempt := 1; attempt <= 5; attempt++ {
-		if err := q.HealthCheck(); err != nil {
-			healthErr = err
-			log.Printf("Qdrant health check failed (attempt %d/5): %v", attempt, err)
-			time.Sleep(2 * time.Second)
-			continue
-		}
-		healthErr = nil
-		break
-	}
-	if healthErr != nil {
-		log.Fatalf("Qdrant is not reachable after 5 attempts. Last error: %v", healthErr)
-	}
+    // Qdrant health and RAG init
+    var rag *ragvec.VecRAG
+    if noQdrant || strings.TrimSpace(os.Getenv("MCP_NO_QDRANT")) == "1" {
+        log.Println("Starting in degraded mode: skipping Qdrant health check and RAG initialization")
+    } else {
+        q := ragvec.NewQdrantWithConfig(&cfg.Global.Qdrant, 1)
+        var healthErr error
+        for attempt := 1; attempt <= 5; attempt++ {
+            if err := q.HealthCheck(); err != nil {
+                healthErr = err
+                log.Printf("Qdrant health check failed (attempt %d/5): %v", attempt, err)
+                time.Sleep(2 * time.Second)
+                continue
+            }
+            healthErr = nil
+            break
+        }
+        if healthErr != nil {
+            log.Fatalf("Qdrant is not reachable after 5 attempts. Last error: %v", healthErr)
+        }
+        var err error
+        rag, err = ragvec.NewVecRAGWithConfig(cfg.Global)
+        if err != nil {
+            log.Fatalf("Failed to initialize RAG: %v", err)
+        }
+        log.Println("RAG system initialized successfully")
+    }
 
-	// Init RAG vector with config
-	var err error
-	rag, err = ragvec.NewVecRAGWithConfig(cfg.Global)
-	if err != nil {
-		log.Fatalf("Failed to initialize RAG: %v", err)
-	}
-	log.Println("RAG system initialized successfully")
+    log.Println("MCP service ready, waiting for requests...")
 
-	log.Println("MCP service ready, waiting for requests...")
+    // Optional HTTP server
+    if strings.TrimSpace(httpAddr) != "" {
+        httpserver.Start(httpAddr, cfg.Global, rag)
+        log.Printf("HTTP API enabled at %s", httpAddr)
+    }
 
 	for {
 		req, err := rpc.Read()
@@ -100,14 +114,14 @@ func main() {
 		}
 
 		switch req.Method {
-		case "initialize":
-			res := mcp.InitializeResult{
-				ProtocolVersion: "2024-11-05",
-				Capabilities:    mcp.Capabilities{Tools: true},
-				ServerInfo:      mcp.MCPServerInfo{Name: cfg.Global.Server.Name, Version: cfg.Global.Server.Version},
-			}
-			log.Println("Initialization completed")
-			_ = rpc.Reply(req.ID, res)
+        case "initialize":
+            res := mcp.InitializeResult{
+                ProtocolVersion: "2024-11-05",
+                Capabilities:    mcp.Capabilities{Tools: map[string]any{}},
+                ServerInfo:      mcp.MCPServerInfo{Name: cfg.Global.Server.Name, Version: cfg.Global.Server.Version},
+            }
+            log.Println("Initialization completed")
+            _ = rpc.Reply(req.ID, res)
 
         case "tools/list":
             tools := []mcp.Tool{
@@ -188,6 +202,20 @@ func main() {
                         },
                     },
                 },
+                {
+                    Name:        "status_get",
+                    Description: "Get server status: provider, Qdrant health, counts, and config summary.",
+                    InputSchema: map[string]any{
+                        "type": "object",
+                        "properties": map[string]any{
+                            "fast_only": map[string]any{
+                                "type":        "boolean",
+                                "description": "If true, skip expensive aggregation (projects count)",
+                                "default":     true,
+                            },
+                        },
+                    },
+                },
             }
             if cfg.Global.Logging.Level == "debug" {
                 log.Printf("Returning %d available tools", len(tools))
@@ -233,20 +261,24 @@ func main() {
 					break
 				}
 
-				log.Printf("Successfully indexed %d document chunks", n)
-				_ = rpc.Reply(req.ID, mcp.ToolsCallResult{Content: map[string]any{
-					"indexed":      n,
-					"directory":    dir,
-					"include_code": includeCode,
-					"status":       "success",
-					"message":      fmt.Sprintf("Successfully indexed %d document chunks from %s", n, dir),
-					"config": map[string]any{
-						"chunk_size":    cfg.Global.Indexing.ChunkSize,
-						"chunk_overlap": cfg.Global.Indexing.ChunkOverlap,
-						"batch_size":    cfg.Global.Indexing.BatchSize,
-						"provider":      cfg.Global.Embedding.Provider,
-					},
-				}})
+                log.Printf("Successfully indexed %d document chunks", n)
+                payload := map[string]any{
+                    "indexed":      n,
+                    "directory":    dir,
+                    "include_code": includeCode,
+                    "status":       "success",
+                    "message":      fmt.Sprintf("Successfully indexed %d document chunks from %s", n, dir),
+                    "config": map[string]any{
+                        "chunk_size":    cfg.Global.Indexing.ChunkSize,
+                        "chunk_overlap": cfg.Global.Indexing.ChunkOverlap,
+                        "batch_size":    cfg.Global.Indexing.BatchSize,
+                        "provider":      cfg.Global.Embedding.Provider,
+                    },
+                }
+                _ = rpc.Reply(req.ID, mcp.ToolsCallResult{Content: []mcp.ContentItem{
+                    {Type: "text", Text: payload["message"].(string)},
+                    {Type: "json", JSON: payload},
+                }})
 
             case "rag_search":
                 if rag == nil {
@@ -282,17 +314,21 @@ func main() {
 					break
 				}
 
-				log.Printf("Search completed, returning %d document chunks for LLM context", len(hits))
-				_ = rpc.Reply(req.ID, mcp.ToolsCallResult{Content: map[string]any{
-					"query":        q,
-					"chunks":       hits,
-					"total_chunks": len(hits),
-					"message":      fmt.Sprintf("Found %d relevant document chunks", len(hits)),
+                log.Printf("Search completed, returning %d document chunks for LLM context", len(hits))
+                spayload := map[string]any{
+                    "query":        q,
+                    "chunks":       hits,
+                    "total_chunks": len(hits),
+                    "message":      fmt.Sprintf("Found %d relevant document chunks", len(hits)),
                     "config": map[string]any{
                         "provider":        cfg.Global.Embedding.Provider,
                         "project":         proj,
                         "project_prefix":  projPref,
                     },
+                }
+                _ = rpc.Reply(req.ID, mcp.ToolsCallResult{Content: []mcp.ContentItem{
+                    {Type: "text", Text: spayload["message"].(string)},
+                    {Type: "json", JSON: spayload},
                 }})
 
             case "rag_projects":
@@ -323,29 +359,136 @@ func main() {
                     _ = rpc.ReplyError(req.ID, -32004, "projects error", err.Error())
                     break
                 }
-                _ = rpc.Reply(req.ID, mcp.ToolsCallResult{Content: map[string]any{
+                ppayload := map[string]any{
                     "projects": list,
                     "count":    len(list),
                     "total":    total,
                     "offset":   offset,
                     "limit":    limit,
                     "filter":   map[string]any{"prefix": prefix},
+                }
+                _ = rpc.Reply(req.ID, mcp.ToolsCallResult{Content: []mcp.ContentItem{
+                    {Type: "text", Text: fmt.Sprintf("Found %d projects (showing %d)", total, len(list))},
+                    {Type: "json", JSON: ppayload},
                 }})
+
+            case "status_get":
+                start := time.Now()
+                fastOnly := true
+                if v, ok := p.Args["fast_only"].(bool); ok {
+                    fastOnly = v
+                }
+                // Always probe Qdrant using current config (even if rag is nil)
+                q := ragvec.NewQdrantWithConfig(&cfg.Global.Qdrant, 1)
+                healthErr := q.HealthCheck()
+                var chunks *int
+                if healthErr == nil {
+                    if c, err := q.CountPoints(); err == nil {
+                        chunks = &c
+                    }
+                }
+                var projectsCount *int
+                var skippedReason string
+                if healthErr == nil && !fastOnly {
+                    // Aggregate projects via scroll (cheap per page, expensive overall)
+                    seen := map[string]struct{}{}
+                    var offset any
+                    for {
+                        pts, next, err := q.ScrollPoints(1000, offset)
+                        if err != nil {
+                            skippedReason = fmt.Sprintf("aggregation error: %v", err)
+                            break
+                        }
+                        for _, pt := range pts {
+                            if pth, ok := pt.Payload["path"].(string); ok {
+                                proj := ragvecProjectFromPath(pth)
+                                seen[proj] = struct{}{}
+                            }
+                        }
+                        if next == nil {
+                            break
+                        }
+                        offset = next
+                        // Soft guard: prevent very long scans
+                        if time.Since(start) > 5*time.Second {
+                            skippedReason = "timeout: partial scan exceeded 5s"
+                            break
+                        }
+                    }
+                    if skippedReason == "" {
+                        v := len(seen)
+                        projectsCount = &v
+                    }
+                } else if fastOnly {
+                    skippedReason = "fast_only=true"
+                }
+                elapsed := time.Since(start).Milliseconds()
+                status := map[string]any{
+                    "provider": cfg.Global.Embedding.Provider,
+                    "qdrant": map[string]any{
+                        "url":        cfg.Global.Qdrant.URL,
+                        "collection": cfg.Global.Qdrant.Collection,
+                        "health":     ifThenElse(healthErr == nil, "ok", healthErr.Error()),
+                    },
+                    "counts": map[string]any{
+                        "chunks":   chunks,
+                        "projects": projectsCount,
+                    },
+                    "config": map[string]any{
+                        "chunk_size":    cfg.Global.Indexing.ChunkSize,
+                        "chunk_overlap": cfg.Global.Indexing.ChunkOverlap,
+                        "batch_size":    cfg.Global.Indexing.BatchSize,
+                        "max_file_kb":   cfg.Global.Indexing.MaxFileKB,
+                        "exclude_dirs":  cfg.Global.Indexing.ExcludeDirs,
+                    },
+                    "degraded_mode": rag == nil,
+                    "fast_only":     fastOnly,
+                    "elapsed_ms":    elapsed,
+                    "note":          skippedReason,
+                }
+                txt := fmt.Sprintf("status: provider=%s, qdrant=%s/%s, health=%v, chunks=%v, projects=%v",
+                    cfg.Global.Embedding.Provider,
+                    cfg.Global.Qdrant.URL, cfg.Global.Qdrant.Collection,
+                    healthErr == nil,
+                    nilOrInt(chunks), nilOrInt(projectsCount),
+                )
+                _ = rpc.Reply(req.ID, mcp.ToolsCallResult{Content: []mcp.ContentItem{{Type: "text", Text: txt}, {Type: "json", JSON: status}}})
 
             default:
                 log.Printf("Unknown tool requested: %s", p.Name)
                 _ = rpc.ReplyError(req.ID, -32601, "tool not found", p.Name)
             }
 
-		case "notifications/initialized":
-			if cfg.Global.Logging.Level == "debug" {
-				log.Println("Client initialization notification received")
-			}
-			_ = rpc.Reply(req.ID, map[string]any{"ok": true})
+        case "notifications/initialized":
+            if cfg.Global.Logging.Level == "debug" {
+                log.Println("Client initialization notification received")
+            }
+            // Per JSON-RPC spec: notifications have no id and must not be replied to.
+            // Some MCP clients send this as a notification; do not send a response.
+            // Intentionally no reply here.
 
 		default:
 			log.Printf("Unknown method: %s", req.Method)
 			_ = rpc.ReplyError(req.ID, -32601, "method not found", req.Method)
 		}
 	}
+}
+
+// tiny helpers for status_get
+func ifThenElse(cond bool, a, b string) string {
+    if cond { return a }
+    return b
+}
+
+func nilOrInt(p *int) any {
+    if p == nil { return nil }
+    return *p
+}
+
+// project derivation copied for status aggregation without full VecRAG
+func ragvecProjectFromPath(p string) string {
+    if p == "" { return "unknown" }
+    dir := filepath.Dir(p)
+    if dir == "." || dir == "/" { return "root" }
+    return filepath.Base(dir)
 }

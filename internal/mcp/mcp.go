@@ -49,7 +49,8 @@ type InitializeResult struct {
 }
 
 type Capabilities struct {
-    Tools bool `json:"tools"`
+    // Per MCP spec, capabilities are objects; an empty object means supported.
+    Tools map[string]any `json:"tools"`
 }
 
 type MCPServerInfo struct {
@@ -74,8 +75,17 @@ type ToolsCallParams struct {
     Args map[string]any `json:"arguments"`
 }
 
+// ContentItem represents a single content part in MCP responses
+type ContentItem struct {
+    Type string `json:"type"`
+    // Text content
+    Text string `json:"text,omitempty"`
+    // JSON content (structured)
+    JSON any `json:"json,omitempty"`
+}
+
 type ToolsCallResult struct {
-    Content any `json:"content"`
+    Content []ContentItem `json:"content"`
 }
 
 // Util baca/loop stdio
