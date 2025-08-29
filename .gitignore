@@ -4,3 +4,5 @@ test-config.json
 config.json
 mcp-service
 .gemini/
+docs/
+!docs/default.txt
