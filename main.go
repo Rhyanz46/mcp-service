@@ -125,105 +125,124 @@ func main() {
 			_ = rpc.Reply(req.ID, res)
 
 		case "tools/list":
-			tools := []mcp.Tool{
-				{
-					Name:        "rag_index",
-					Description: fmt.Sprintf("Index documents from a directory into Qdrant vector database. Supports documentation (%v) and code files (%v).", cfg.Global.Indexing.FileTypes.Documentation, cfg.Global.Indexing.FileTypes.Code),
-					InputSchema: map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"dir": map[string]any{
-								"type":        "string",
-								"description": "Directory path containing documents to index",
-								"default":     "./docs",
-							},
-							"include_code": map[string]any{
-								"type":        "boolean",
-								"description": "Whether to include code files in indexing",
-								"default":     false,
-							},
-						},
-					},
-				},
-				{
-					Name:        "rag_search",
-					Description: "Search for relevant document chunks using semantic similarity. Supports optional project filter.",
-					InputSchema: map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"query": map[string]any{
-								"type":        "string",
-								"description": "Search query for finding relevant document chunks",
-							},
-							"k": map[string]any{
-								"type":        "integer",
-								"minimum":     1,
-								"maximum":     20,
-								"default":     5,
-								"description": "Number of most relevant document chunks to return",
-							},
-							"project": map[string]any{
-								"type":        "string",
-								"description": "Filter results to an exact project name (parent folder)",
-								"default":     "",
-							},
-							"project_prefix": map[string]any{
-								"type":        "string",
-								"description": "Filter results to projects starting with this prefix (client-side)",
-								"default":     "",
-							},
-						},
-						"required": []string{"query"},
-					},
-				},
-				{
-					Name:        "rag_projects",
-					Description: "List detected projects (by parent directory) with total indexed chunks and file count. Supports prefix filter and pagination.",
-					InputSchema: map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"prefix": map[string]any{
-								"type":        "string",
-								"description": "Filter project names by prefix (case-insensitive)",
-								"default":     "",
-							},
-							"offset": map[string]any{
-								"type":        "integer",
-								"minimum":     0,
-								"default":     0,
-								"description": "Pagination offset",
-							},
-							"limit": map[string]any{
-								"type":        "integer",
-								"minimum":     1,
-								"maximum":     1000,
-								"default":     50,
-								"description": "Max number of projects to return",
-							},
-						},
-					},
-				},
-				{
-					Name:        "status_get",
-					Description: "Get server status: provider, Qdrant health, counts, and config summary.",
-					InputSchema: map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"fast_only": map[string]any{
-								"type":        "boolean",
-								"description": "If true, skip expensive aggregation (projects count)",
-								"default":     true,
-							},
-						},
-					},
-				},
-			}
-			if cfg.Global.Logging.Level == "debug" {
-				log.Printf("Returning %d available tools", len(tools))
-			}
-			_ = rpc.Reply(req.ID, mcp.ToolsListResult{Tools: tools})
+            tools := []mcp.Tool{
+                {
+                    Name:        "rag_index",
+                    Description: fmt.Sprintf("Index documents from a directory into Qdrant vector database. Supports documentation (%v) and code files (%v).", cfg.Global.Indexing.FileTypes.Documentation, cfg.Global.Indexing.FileTypes.Code),
+                    InputSchema: map[string]any{
+                        "type": "object",
+                        "properties": map[string]any{
+                            "dir": map[string]any{
+                                "type":        "string",
+                                "description": "Directory path containing documents to index",
+                                "default":     "./docs",
+                            },
+                            "include_code": map[string]any{
+                                "type":        "boolean",
+                                "description": "Whether to include code files in indexing",
+                                "default":     false,
+                            },
+                        },
+                    },
+                },
+                {
+                    Name:        "rag_delete",
+                    Description: "Delete indexed chunks. Use either 'all' or 'project'.",
+                    InputSchema: map[string]any{
+                        "type": "object",
+                        "properties": map[string]any{
+                            "all": map[string]any{
+                                "type":        "boolean",
+                                "description": "Delete all chunks in the collection",
+                                "default":     false,
+                            },
+                            "project": map[string]any{
+                                "type":        "string",
+                                "description": "Delete chunks for a specific project (parent directory)",
+                                "default":     "",
+                            },
+                        },
+                    },
+                },
+                {
+                    Name:        "rag_search",
+                    Description: "Search for relevant document chunks using semantic similarity. Supports optional project filter.",
+                    InputSchema: map[string]any{
+                        "type": "object",
+                        "properties": map[string]any{
+                            "query": map[string]any{
+                                "type":        "string",
+                                "description": "Search query for finding relevant document chunks",
+                            },
+                            "k": map[string]any{
+                                "type":        "integer",
+                                "minimum":     1,
+                                "maximum":     20,
+                                "default":     5,
+                                "description": "Number of most relevant document chunks to return",
+                            },
+                            "project": map[string]any{
+                                "type":        "string",
+                                "description": "Filter results to an exact project name (parent folder)",
+                                "default":     "",
+                            },
+                            "project_prefix": map[string]any{
+                                "type":        "string",
+                                "description": "Filter results to projects starting with this prefix (client-side)",
+                                "default":     "",
+                            },
+                        },
+                        "required": []string{"query"},
+                    },
+                },
+                {
+                    Name:        "rag_projects",
+                    Description: "List detected projects (by parent directory) with total indexed chunks and file count. Supports prefix filter and pagination.",
+                    InputSchema: map[string]any{
+                        "type": "object",
+                        "properties": map[string]any{
+                            "prefix": map[string]any{
+                                "type":        "string",
+                                "description": "Filter project names by prefix (case-insensitive)",
+                                "default":     "",
+                            },
+                            "offset": map[string]any{
+                                "type":        "integer",
+                                "minimum":     0,
+                                "default":     0,
+                                "description": "Pagination offset",
+                            },
+                            "limit": map[string]any{
+                                "type":        "integer",
+                                "minimum":     1,
+                                "maximum":     1000,
+                                "default":     50,
+                                "description": "Max number of projects to return",
+                            },
+                        },
+                    },
+                },
+                {
+                    Name:        "status_get",
+                    Description: "Get server status: provider, Qdrant health, counts, and config summary.",
+                    InputSchema: map[string]any{
+                        "type": "object",
+                        "properties": map[string]any{
+                            "fast_only": map[string]any{
+                                "type":        "boolean",
+                                "description": "If true, skip expensive aggregation (projects count)",
+                                "default":     true,
+                            },
+                        },
+                    },
+                },
+            }
+            if cfg.Global.Logging.Level == "debug" {
+                log.Printf("Returning %d available tools", len(tools))
+            }
+            _ = rpc.Reply(req.ID, mcp.ToolsListResult{Tools: tools})
 
-		case "tools/call":
+        case "tools/call":
 			var p mcp.ToolsCallParams
 			if err := json.Unmarshal(req.Params, &p); err != nil {
 				log.Printf("Invalid tool call params: %v", err)
@@ -235,7 +254,7 @@ func main() {
 				log.Printf("Calling tool: %s", p.Name)
 			}
 
-			switch p.Name {
+            switch p.Name {
 			case "rag_index":
 				if rag == nil {
 					log.Println("RAG index requested but RAG system not initialized")
@@ -332,7 +351,7 @@ func main() {
 					jsonResource(spayload),
 				}})
 
-			case "rag_projects":
+            case "rag_projects":
 				if rag == nil {
 					log.Println("RAG projects requested but RAG system not initialized")
 					_ = rpc.ReplyError(req.ID, -32001, "RAG not initialized", "Ensure Qdrant is running")
@@ -368,12 +387,12 @@ func main() {
 					"limit":    limit,
 					"filter":   map[string]any{"prefix": prefix},
 				}
-				_ = rpc.Reply(req.ID, mcp.ToolsCallResult{Content: []mcp.ContentItem{
-					{Type: "text", Text: fmt.Sprintf("Found %d projects (showing %d)", total, len(list))},
-					jsonResource(ppayload),
-				}})
+                _ = rpc.Reply(req.ID, mcp.ToolsCallResult{Content: []mcp.ContentItem{
+                    {Type: "text", Text: fmt.Sprintf("Found %d projects (showing %d)", total, len(list))},
+                    jsonResource(ppayload),
+                }})
 
-			case "status_get":
+            case "status_get":
 				start := time.Now()
 				fastOnly := true
 				if v, ok := p.Args["fast_only"].(bool); ok {
@@ -457,12 +476,46 @@ func main() {
 					healthErr == nil,
 					nilOrInt(chunks), nilOrInt(projectsCount),
 				)
-				_ = rpc.Reply(req.ID, mcp.ToolsCallResult{Content: []mcp.ContentItem{{Type: "text", Text: txt}, jsonResource(status)}})
+                _ = rpc.Reply(req.ID, mcp.ToolsCallResult{Content: []mcp.ContentItem{{Type: "text", Text: txt}, jsonResource(status)}})
 
-			default:
-				log.Printf("Unknown tool requested: %s", p.Name)
-				_ = rpc.ReplyError(req.ID, -32601, "tool not found", p.Name)
-			}
+            case "rag_delete":
+                if rag == nil {
+                    _ = rpc.ReplyError(req.ID, -32001, "RAG not initialized", "Ensure Qdrant is running")
+                    break
+                }
+                all := false
+                if v, ok := p.Args["all"].(bool); ok { all = v }
+                proj, _ := p.Args["project"].(string)
+                if !all && strings.TrimSpace(proj) == "" {
+                    _ = rpc.ReplyError(req.ID, -32602, "invalid params", "Provide either all=true or a non-empty project")
+                    break
+                }
+                var del int
+                var err error
+                if all {
+                    del, err = rag.DeleteAll()
+                } else {
+                    del, err = rag.DeleteProject(proj)
+                }
+                if err != nil {
+                    log.Printf("Delete error: %v", err)
+                    _ = rpc.ReplyError(req.ID, -32005, "delete error", err.Error())
+                    break
+                }
+                msg := fmt.Sprintf("Deleted %d chunks", del)
+                if !all { msg += fmt.Sprintf(" in project '%s'", proj) }
+                payload := map[string]any{
+                    "deleted": del,
+                    "all":     all,
+                    "project": proj,
+                    "status":  "success",
+                }
+                _ = rpc.Reply(req.ID, mcp.ToolsCallResult{Content: []mcp.ContentItem{{Type: "text", Text: msg}, jsonResource(payload)}})
+
+            default:
+                log.Printf("Unknown tool requested: %s", p.Name)
+                _ = rpc.ReplyError(req.ID, -32601, "tool not found", p.Name)
+            }
 
 		case "notifications/initialized":
 			if cfg.Global.Logging.Level == "debug" {

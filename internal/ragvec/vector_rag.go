@@ -257,6 +257,25 @@ func (q *Qdrant) Search(vec []float32, k int, filter map[string]any) ([]SearchHi
 	return out, nil
 }
 
+// DeleteByIDs deletes points by explicit list of IDs (UUIDs or integers)
+func (q *Qdrant) DeleteByIDs(ids []any) error {
+    body := map[string]any{"points": ids}
+    b, _ := json.Marshal(body)
+    url := fmt.Sprintf("%s/collections/%s/points/delete?wait=true", q.baseURL, q.collection)
+    req, _ := http.NewRequest("POST", url, bytes.NewReader(b))
+    req.Header.Set("Content-Type", "application/json")
+    client := &http.Client{Timeout: 30 * time.Second}
+    res, err := client.Do(req)
+    if err != nil {
+        return err
+    }
+    defer res.Body.Close()
+    if res.StatusCode >= 300 {
+        return fmt.Errorf("delete http %d", res.StatusCode)
+    }
+    return nil
+}
+
 // ---------- Scrolling and project listing ----------
 type ScrollPoint struct {
 	ID      any            `json:"id"`
@@ -304,6 +323,53 @@ func (q *Qdrant) ScrollPoints(limit int, offset any) ([]ScrollPoint, any, error)
 		pts[i] = ScrollPoint{ID: p.ID, Payload: p.Payload}
 	}
 	return pts, rr.Result.NextPageOffset, nil
+}
+
+// ScrollPointsWithFilter supports server-side filtering when scrolling
+func (q *Qdrant) ScrollPointsWithFilter(limit int, offset any, filter map[string]any) ([]ScrollPoint, any, error) {
+    if limit <= 0 || limit > 10000 {
+        limit = 1000
+    }
+    body := map[string]any{
+        "limit":        limit,
+        "with_payload": true,
+    }
+    if offset != nil {
+        body["offset"] = offset
+    }
+    if filter != nil {
+        body["filter"] = filter
+    }
+    b, _ := json.Marshal(body)
+    url := fmt.Sprintf("%s/collections/%s/points/scroll", q.baseURL, q.collection)
+    req, _ := http.NewRequest("POST", url, bytes.NewReader(b))
+    req.Header.Set("Content-Type", "application/json")
+    client := &http.Client{Timeout: 15 * time.Second}
+    res, err := client.Do(req)
+    if err != nil {
+        return nil, nil, err
+    }
+    defer res.Body.Close()
+    if res.StatusCode >= 300 {
+        return nil, nil, fmt.Errorf("scroll http %d", res.StatusCode)
+    }
+    var rr struct {
+        Result struct {
+            Points         []struct {
+                ID      any            `json:"id"`
+                Payload map[string]any `json:"payload"`
+            } `json:"points"`
+            NextPageOffset any `json:"next_page_offset"`
+        } `json:"result"`
+    }
+    if err := json.NewDecoder(res.Body).Decode(&rr); err != nil {
+        return nil, nil, err
+    }
+    pts := make([]ScrollPoint, len(rr.Result.Points))
+    for i, p := range rr.Result.Points {
+        pts[i] = ScrollPoint{ID: p.ID, Payload: p.Payload}
+    }
+    return pts, rr.Result.NextPageOffset, nil
 }
 
 // ListProjects aggregates indexed chunks by project (directory name of each file)
@@ -479,6 +545,67 @@ func (r *VecRAG) IngestDocs(dir string, includeCode bool) (int, error) {
 		total += len(batch)
 	}
 	return total, nil
+}
+
+// DeleteAll deletes all points by scrolling and deleting in batches
+func (r *VecRAG) DeleteAll() (int, error) {
+    deleted := 0
+    batch := make([]any, 0, 1000)
+    var offset any
+    for {
+        pts, next, err := r.vdb.ScrollPoints(1000, offset)
+        if err != nil {
+            return deleted, err
+        }
+        for _, p := range pts {
+            batch = append(batch, p.ID)
+            if len(batch) >= 1000 {
+                if err := r.vdb.DeleteByIDs(batch); err != nil { return deleted, err }
+                deleted += len(batch)
+                batch = batch[:0]
+            }
+        }
+        if next == nil { break }
+        offset = next
+    }
+    if len(batch) > 0 {
+        if err := r.vdb.DeleteByIDs(batch); err != nil { return deleted, err }
+        deleted += len(batch)
+    }
+    return deleted, nil
+}
+
+// DeleteProject deletes all points for a project via filtered scroll+delete
+func (r *VecRAG) DeleteProject(project string) (int, error) {
+    filter := map[string]any{
+        "must": []map[string]any{
+            {"key": "project", "match": map[string]any{"value": project}},
+        },
+    }
+    deleted := 0
+    ids := make([]any, 0, 1000)
+    var offset any
+    for {
+        pts, next, err := r.vdb.ScrollPointsWithFilter(1000, offset, filter)
+        if err != nil {
+            return deleted, err
+        }
+        for _, p := range pts {
+            ids = append(ids, p.ID)
+            if len(ids) >= 1000 {
+                if err := r.vdb.DeleteByIDs(ids); err != nil { return deleted, err }
+                deleted += len(ids)
+                ids = ids[:0]
+            }
+        }
+        if next == nil { break }
+        offset = next
+    }
+    if len(ids) > 0 {
+        if err := r.vdb.DeleteByIDs(ids); err != nil { return deleted, err }
+        deleted += len(ids)
+    }
+    return deleted, nil
 }
 
 func (r *VecRAG) Search(query string, k int) ([]map[string]any, error) {

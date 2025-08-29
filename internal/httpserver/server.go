@@ -151,8 +151,8 @@ func Start(addr string, conf *cfg.Config, rag *ragvec.VecRAG) {
 		writeJSON(w, http.StatusOK, resp)
 	}))
 
-	// POST /rag/search {query, k, project, project_prefix}
-	mux.HandleFunc("/rag/search", requireAuth(func(w http.ResponseWriter, r *http.Request) {
+    // POST /rag/search {query, k, project, project_prefix}
+    mux.HandleFunc("/rag/search", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if rag == nil {
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "RAG not initialized", Details: "Start Qdrant or disable -no-qdrant"})
 			return
@@ -180,7 +180,27 @@ func Start(addr string, conf *cfg.Config, rag *ragvec.VecRAG) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"query": body.Query, "chunks": hits, "total_chunks": len(hits)})
-	}))
+    }))
+
+    // POST /rag/delete {all, project}
+    mux.HandleFunc("/rag/delete", requireAuth(func(w http.ResponseWriter, r *http.Request) {
+        if rag == nil { writeJSON(w, http.StatusServiceUnavailable, errorResponse{Error: "RAG not initialized", Details: "Start Qdrant or disable -no-qdrant"}); return }
+        var body struct {
+            All     bool   `json:"all"`
+            Project string `json:"project"`
+        }
+        if err := json.NewDecoder(r.Body).Decode(&body); err != nil { writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid json", Details: err.Error()}); return }
+        if !body.All && strings.TrimSpace(body.Project) == "" { writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid params", Details: "Provide all=true or a non-empty project"}); return }
+        var del int
+        var err error
+        if body.All {
+            del, err = rag.DeleteAll()
+        } else {
+            del, err = rag.DeleteProject(body.Project)
+        }
+        if err != nil { writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "delete error", Details: err.Error()}); return }
+        writeJSON(w, http.StatusOK, map[string]any{"deleted": del, "all": body.All, "project": body.Project})
+    }))
 
 	// GET /rag/projects?prefix=&offset=&limit=
 	mux.HandleFunc("/rag/projects", requireAuth(func(w http.ResponseWriter, r *http.Request) {
